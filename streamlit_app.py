@@ -7,6 +7,14 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # for 3D PCA
 
+# ---- PDF-related imports ----
+import io
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+
 # ---------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------
@@ -90,7 +98,7 @@ def compute_tabular_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
 def compute_tabular_ae_recon_and_error(model, X_scaled: np.ndarray):
     """Return reconstruction and per-sensor squared error."""
     X_t = torch.from_numpy(X_scaled).float().to(device)
-    with torch.no_grad():
+    with torch.no.grad():
         recon = model(X_t)
         err = (X_t - recon)**2
     return recon.cpu().numpy(), err.cpu().numpy()
@@ -127,6 +135,118 @@ def compute_sensor_feature_importance(pca_model, rf_model):
     # Weighted sum of absolute loadings
     sensor_importance = np.abs(components.T @ pc_importance)
     return sensor_importance  # (n_features,)
+
+# ---- PDF helpers ----
+def fig_to_img(fig):
+    """Convert a Matplotlib figure to an in-memory PNG buffer."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+    buf.seek(0)
+    return buf
+
+def generate_full_pdf(
+    filename,
+    iso_mean,
+    ae_mean,
+    lstm_mean,
+    fail_mean,
+    health,
+    iso_score_fig,
+    ae_heatmap_fig,
+    pca_2d_fig,
+    feature_imp_fig,
+    spc_sensor,
+    spc_mean,
+    spc_ucl,
+    spc_lcl,
+    spc_outliers_list
+):
+    styles = getSampleStyleSheet()
+    story = []
+
+    # ---------------- HEADER -----------------
+    story.append(Paragraph("<b>SECOM SENSOR DRIFT & ANOMALY DETECTION REPORT</b>", styles["Title"]))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # ---------------- EXEC SUMMARY -----------------
+    story.append(Paragraph("<b>1. Executive Summary</b>", styles["Heading2"]))
+    story.append(Paragraph(f"System Overall Health Status: <b>{health}</b>", styles["Normal"]))
+    story.append(Paragraph(f"Fail Probability (mean): <b>{fail_mean*100:.2f}%</b>", styles["Normal"]))
+    story.append(Spacer(1, 0.2 * inch))
+
+    # ---------------- METRICS TABLE -----------------
+    story.append(Paragraph("<b>2. Key Model Metrics</b>", styles["Heading2"]))
+
+    table_data = [
+        ["Metric", "Value"],
+        ["IsolationForest Score (mean)", f"{iso_mean:.4f}"],
+        ["Autoencoder Error (mean)", f"{ae_mean:.4f}"],
+        ["LSTM AE Error (mean)", f"{lstm_mean:.4f}"],
+        ["Fail Probability", f"{fail_mean*100:.2f}%"],
+    ]
+
+    table = Table(table_data, hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ]
+        )
+    )
+    story.append(table)
+    story.append(Spacer(1, 0.3 * inch))
+
+    # ---------------- SPC SECTION -----------------
+    story.append(Paragraph("<b>3. SPC — Statistical Process Control</b>", styles["Heading2"]))
+
+    story.append(Paragraph(f"Selected Sensor: <b>{spc_sensor}</b>", styles["Normal"]))
+    story.append(Paragraph(f"Mean: {spc_mean:.4f}", styles["Normal"]))
+    story.append(Paragraph(f"UCL (+3σ): {spc_ucl:.4f}", styles["Normal"]))
+    story.append(Paragraph(f"LCL (-3σ): {spc_lcl:.4f}", styles["Normal"]))
+    story.append(Paragraph(f"Out-of-Control Points: <b>{len(spc_outliers_list)}</b>", styles["Normal"]))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # ---------------- HISTOGRAM IMAGE -----------------
+    story.append(Paragraph("<b>4. Anomaly Score Distribution</b>", styles["Heading2"]))
+    story.append(Spacer(1, 0.1 * inch))
+
+    iso_img = fig_to_img(iso_score_fig)
+    story.append(RLImage(iso_img, width=5.5 * inch, height=3.2 * inch))
+    story.append(Spacer(1, 0.2 * inch))
+
+    # ---------------- AE HEATMAP IMAGE -----------------
+    story.append(Paragraph("<b>5. Autoencoder Reconstruction Heatmap</b>", styles["Heading2"]))
+    ae_img = fig_to_img(ae_heatmap_fig)
+    story.append(RLImage(ae_img, width=5.5 * inch, height=3.2 * inch))
+    story.append(PageBreak())
+
+    # ---------------- PCA 2D PLOT -----------------
+    story.append(Paragraph("<b>6. PCA Visualization (PC1 vs PC2)</b>", styles["Heading2"]))
+    pca_img = fig_to_img(pca_2d_fig)
+    story.append(RLImage(pca_img, width=5.5 * inch, height=3.2 * inch))
+    story.append(Spacer(1, 0.2 * inch))
+
+    # ---------------- FEATURE IMPORTANCE -----------------
+    story.append(Paragraph("<b>7. Sensor Feature Importance</b>", styles["Heading2"]))
+    imp_img = fig_to_img(feature_imp_fig)
+    story.append(RLImage(imp_img, width=5.5 * inch, height=3.2 * inch))
+    story.append(Spacer(1, 0.2 * inch))
+
+    # ---------------- FOOTER -----------------
+    story.append(Spacer(1, 0.5 * inch))
+    story.append(
+        Paragraph(
+            "<i>This report was automatically generated using Smart Manufacturing AI Dashboard.</i>",
+            styles["Italic"],
+        )
+    )
+
+    doc = SimpleDocTemplate(filename, pagesize=A4)
+    doc.build(story)
 
 # ---------------------------------------------
 # UI
@@ -169,6 +289,59 @@ if uploaded_file:
     # Sensor-level feature importance (RandomForest + PCA)
     sensor_importance = compute_sensor_feature_importance(pca_clf, clf)
 
+    # --------- Precomputed figures for PDF (non-interactive defaults) ---------
+    # 1) Histogram of anomaly scores
+    fig_pdf_iso, ax_pdf_iso = plt.subplots(figsize=(10, 4))
+    ax_pdf_iso.hist(iso_score, bins=40, alpha=0.6, label="IsolationForest")
+    ax_pdf_iso.hist(ae_score, bins=40, alpha=0.6, label="Autoencoder")
+    ax_pdf_iso.legend()
+    ax_pdf_iso.set_xlabel("Score")
+    ax_pdf_iso.set_ylabel("Count")
+
+    # 2) AE heatmap (first up to 50 samples)
+    max_samples_pdf = min(50, ae_err_matrix.shape[0])
+    subset_err_pdf = ae_err_matrix[:max_samples_pdf, :]
+    fig_pdf_hm, ax_pdf_hm = plt.subplots(figsize=(10, 4))
+    im_pdf = ax_pdf_hm.imshow(subset_err_pdf, aspect='auto', interpolation='nearest')
+    ax_pdf_hm.set_xlabel("Sensor Index")
+    ax_pdf_hm.set_ylabel("Sample Index")
+    ax_pdf_hm.set_title("AE Per-Sensor Squared Error (Top Rows)")
+
+    # 3) PCA 2D scatter
+    X_pca_2d_pdf = X_pca[:, :2]
+    fig_pdf_pca2d, ax_pdf_pca2d = plt.subplots(figsize=(7, 6))
+    sc_pdf = ax_pdf_pca2d.scatter(
+        X_pca_2d_pdf[:, 0],
+        X_pca_2d_pdf[:, 1],
+        c=pred_fail,
+        cmap="coolwarm",
+        s=15
+    )
+    ax_pdf_pca2d.set_xlabel("PC1")
+    ax_pdf_pca2d.set_ylabel("PC2")
+    ax_pdf_pca2d.set_title("PCA 2D — Fail Probability")
+
+    # 4) Feature importance (top 20)
+    imp_df_pdf = pd.DataFrame({
+        "sensor": [f"sensor_{i}" for i in range(sensor_importance.shape[0])],
+        "importance": sensor_importance
+    }).sort_values("importance", ascending=False)
+    top_imp_pdf = imp_df_pdf.head(20)
+    fig_pdf_imp, ax_pdf_imp = plt.subplots(figsize=(10, 4))
+    ax_pdf_imp.bar(top_imp_pdf["sensor"], top_imp_pdf["importance"])
+    ax_pdf_imp.set_xticklabels(top_imp_pdf["sensor"], rotation=45, ha="right")
+    ax_pdf_imp.set_ylabel("Importance (approx.)")
+    ax_pdf_imp.set_title("Top Sensor Importance (via PCA + RF)")
+
+    # 5) SPC stats for report (use first sensor as default)
+    spc_sensor = df.columns[0]
+    series_pdf = df[spc_sensor].astype(float).values
+    spc_mean = np.nanmean(series_pdf)
+    spc_std = np.nanstd(series_pdf)
+    spc_ucl = spc_mean + 3 * spc_std
+    spc_lcl = spc_mean - 3 * spc_std
+    spc_outliers_idx = np.where((series_pdf > spc_ucl) | (series_pdf < spc_lcl))[0]
+
     # ---------------------------------------------
     # TABS
     # ---------------------------------------------
@@ -198,6 +371,37 @@ if uploaded_file:
 
         st.markdown("### Raw Uploaded Data (first 20 rows)")
         st.dataframe(df.head(20))
+
+        # ---- PDF Download Button ----
+        st.markdown("### 📄 Download Full PDF Report")
+        if st.button("Generate Full PDF Report"):
+            pdf_path = "SECOM_Full_Report.pdf"
+
+            generate_full_pdf(
+                filename=pdf_path,
+                iso_mean=iso_mean,
+                ae_mean=ae_mean,
+                lstm_mean=lstm_mean,
+                fail_mean=fail_mean,
+                health=health,
+                iso_score_fig=fig_pdf_iso,
+                ae_heatmap_fig=fig_pdf_hm,
+                pca_2d_fig=fig_pdf_pca2d,
+                feature_imp_fig=fig_pdf_imp,
+                spc_sensor=spc_sensor,
+                spc_mean=spc_mean,
+                spc_ucl=spc_ucl,
+                spc_lcl=spc_lcl,
+                spc_outliers_list=spc_outliers_idx.tolist()
+            )
+
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Download PDF Report",
+                    data=f,
+                    file_name="SECOM_Full_Report.pdf",
+                    mime="application/pdf"
+                )
 
     # ---------------- TAB 2: ANOMALY SCORES -----------------
     with tab2:
