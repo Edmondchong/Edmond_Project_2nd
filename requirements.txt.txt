@@ -3,7 +3,7 @@ pandas
 numpy
 scikit-learn
 torch
-joblib           
+joblib==1.2.0           
 matplotlib
 umap-learn
 xgboost
