@@ -110,62 +110,105 @@ st.caption("Smart Manufacturing AI — Powered by IsolationForest, Autoencoder, 
 uploaded_file = st.file_uploader("Upload a SECOM sensor CSV file", type=["csv"])
 
 if uploaded_file:
+
+    # --- Load CSV ---
     df = pd.read_csv(uploaded_file, header=None)
     df.columns = [f"sensor_{i}" for i in range(df.shape[1])]
 
-    st.write("### Uploaded Data (first 20 rows)")
-    st.dataframe(df.head(20))
-
-    # Preprocess
+    # --- Preprocess ---
     X_imp = imputer.transform(df)
     X_scaled = scaler.transform(X_imp)
-    # Isolation Forest score
+
+    # --- Models ---
     iso_score = -iso.decision_function(X_scaled)
-    iso_mean = float(np.mean(iso_score))
-
-    # AE score
     ae_score = compute_tabular_ae_score(ae, X_scaled)
-    ae_mean = float(np.mean(ae_score))
-
-    # LSTM AE score
     lstm_score = compute_lstm_ae_score(lstm_ae, X_scaled)
+
+    iso_mean = float(np.mean(iso_score))
+    ae_mean = float(np.mean(ae_score))
     lstm_mean = float(np.mean(lstm_score))
 
-    # Classifier prediction
+    # Classifier
     X_pca = pca_clf.transform(X_scaled)
     pred_fail = clf.predict_proba(X_pca)[:, 1]
     fail_mean = float(np.mean(pred_fail))
 
-    # Overall health
+    # Health
     health = classify_health(iso_mean, ae_mean, lstm_mean)
 
-    # -----------------------------------------
-    # METRICS
-    # -----------------------------------------
-    st.subheader("📊 Health Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("IsolationForest Score", f"{iso_mean:.4f}")
-    col2.metric("AE Reconstruction Error", f"{ae_mean:.4f}")
-    col3.metric("LSTM AE Error", f"{lstm_mean:.4f}")
-    col4.metric("Fail Probability", f"{fail_mean*100:.2f}%")
+    # ---------------------------------------------------
+    # TAB LAYOUT
+    # ---------------------------------------------------
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Overview", "🧪 Anomaly Scores", "📉 Drift Analysis", "🎯 PCA Visualization", "📡 Sensor Trends"]
+    )
 
-    st.subheader("⚠️ Overall Machine State")
-    st.markdown(f"## {health}")
+    # ------------------- OVERVIEW ---------------------
+    with tab1:
+        st.subheader("📊 Machine Health Summary")
 
-    # -----------------------------------------
-    # PLOTS
-    # -----------------------------------------
-    st.subheader("🔍 Histogram of Anomaly Scores")
-    fig, ax = plt.subplots(figsize=(10,4))
-    ax.hist(iso_score, bins=40, alpha=0.6, label="IsolationForest")
-    ax.hist(ae_score, bins=40, alpha=0.6, label="Autoencoder")
-    ax.legend()
-    st.pyplot(fig)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("IsolationForest Score", f"{iso_mean:.4f}")
+        col2.metric("AE Reconstruction Error", f"{ae_mean:.4f}")
+        col3.metric("LSTM AE Error", f"{lstm_mean:.4f}")
+        col4.metric("Fail Probability", f"{fail_mean*100:.2f}%")
 
-    st.subheader("🔮 Fail Probability Distribution")
-    fig2, ax2 = plt.subplots(figsize=(10,4))
-    ax2.hist(pred_fail, bins=40)
-    st.pyplot(fig2)
+        st.markdown(f"## {health}")
+
+        st.write("### Uploaded Data (first 20 rows)")
+        st.dataframe(df.head(20))
+
+    # ---------------- ANOMALY SCORES -------------------
+    with tab2:
+        st.subheader("🧪 Histogram of Anomaly Scores")
+
+        fig, ax = plt.subplots(figsize=(10,4))
+        ax.hist(iso_score, bins=40, alpha=0.6, label="IsolationForest")
+        ax.hist(ae_score, bins=40, alpha=0.6, label="Autoencoder")
+        ax.legend()
+        st.pyplot(fig)
+
+        st.subheader("🔮 Fail Probability Distribution")
+        fig2, ax2 = plt.subplots(figsize=(10,4))
+        ax2.hist(pred_fail, bins=40)
+        st.pyplot(fig2)
+
+    # ---------------- DRIFT ANALYSIS -------------------
+    with tab3:
+        st.subheader("📉 PC1 Drift Over Time")
+
+        pc1 = X_pca[:, 0]
+        fig3, ax3 = plt.subplots(figsize=(10,4))
+        ax3.plot(pc1)
+        ax3.set_xlabel("Index")
+        ax3.set_ylabel("PC1")
+        st.pyplot(fig3)
+
+    # ---------------- PCA VISUALIZATION ----------------
+    with tab4:
+        st.subheader("🎯 PCA 2D Projection")
+
+        X_pca_2d = X_pca[:, :2]
+        fig4, ax4 = plt.subplots(figsize=(7,6))
+        sc = ax4.scatter(X_pca_2d[:, 0], X_pca_2d[:, 1], s=12)
+        ax4.set_xlabel("PC1")
+        ax4.set_ylabel("PC2")
+        st.pyplot(fig4)
+
+    # ---------------- SENSOR TRENDS ---------------------
+    with tab5:
+        st.subheader("📡 Sensor Value Trend")
+
+        sensor_names = df.columns.tolist()
+        selected_sensor = st.selectbox("Choose a sensor", sensor_names)
+
+        fig5, ax5 = plt.subplots(figsize=(12,4))
+        ax5.plot(df[selected_sensor].values)
+        ax5.set_title(f"{selected_sensor} Over Time")
+        ax5.set_xlabel("Index")
+        ax5.set_ylabel("Value")
+        st.pyplot(fig5)
 
 else:
     st.info("Upload a CSV file to begin analysis.")
+
