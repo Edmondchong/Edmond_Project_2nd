@@ -422,7 +422,11 @@ if uploaded_file:
             shap_values = explainer.shap_values(X_bg)[1]  # class 1 = fail
             shap_importance_pca = np.mean(np.abs(shap_values), axis=0)
 
-            # Sensor-level SHAP
+            # FIX — Match SHAP length to PCA components
+            n_pca = pca_clf.components_.shape[0]
+            shap_importance_pca = shap_importance_pca[:n_pca]
+
+            # Compute sensor-level SHAP
             sensor_shap = compute_sensor_shap_importance(pca_clf, shap_importance_pca)
 
             shap_df = pd.DataFrame({
