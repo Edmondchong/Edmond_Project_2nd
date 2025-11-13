@@ -7,4 +7,5 @@ joblib==1.2.0
 matplotlib
 umap-learn
 xgboost
-
+shap
+plotly
