@@ -16,65 +16,58 @@ st.set_page_config(
 )
 
 # ---------------------------------------------
-# LOAD MODELS & ARTIFACTS
+# LOAD MODELS & ARTIFACTS (from private HuggingFace repo)
 # ---------------------------------------------
-imputer = joblib.load("secom_imputer.joblib")
-scaler = joblib.load("secom_scaler.joblib")
-iso = joblib.load("secom_iso.joblib")
+from huggingface_hub import hf_hub_download
 
-pca_clf = joblib.load("secom_pca_clf.joblib")
-clf = joblib.load("secom_rf_clf.joblib")
+REPO_ID = "https://huggingface.co/EdmondChong/SensorDrift"   
 
-ae_meta = joblib.load("secom_ae_meta.joblib")
+def load_joblib_from_hf(filename):
+    path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=filename,
+        token=st.secrets["HF_TOKEN"]
+    )
+    return joblib.load(path)
+
+def load_torch_from_hf(filename, map_location=None):
+    path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=filename,
+        token=st.secrets["HF_TOKEN"]
+    )
+    return torch.load(path, map_location=map_location)
+
+
+
+# -------- Load Joblib Files --------
+imputer = load_joblib_from_hf("secom_imputer.joblib")
+scaler = load_joblib_from_hf("secom_scaler.joblib")
+iso = load_joblib_from_hf("secom_iso.joblib")
+
+pca_clf = load_joblib_from_hf("secom_pca_clf.joblib")
+clf = load_joblib_from_hf("secom_rf_clf.joblib")
+
+ae_meta = load_joblib_from_hf("secom_ae_meta.joblib")
 input_dim = ae_meta["input_dim"]
 
-# ---- Tabular Autoencoder ----
-class TabularAE(nn.Module):
-    def __init__(self, input_dim, latent_dim=32):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256), nn.ReLU(),
-            nn.Linear(256, 128), nn.ReLU(),
-            nn.Linear(128, latent_dim)
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128), nn.ReLU(),
-            nn.Linear(128, 256), nn.ReLU(),
-            nn.Linear(256, input_dim)
-        )
-
-    def forward(self, x):
-        z = self.encoder(x)
-        return self.decoder(z)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-ae = TabularAE(input_dim=input_dim).to(device)
-ae.load_state_dict(torch.load("secom_ae_best.pth", map_location=device))
-ae.eval()
-
-# ---- LSTM Autoencoder ----
-lstm_meta = joblib.load("secom_lstm_meta.joblib")
+lstm_meta = load_joblib_from_hf("secom_lstm_meta.joblib")
 window_size = lstm_meta["window_size"]
 
-class LSTM_AE(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128, latent_dim=64):
-        super().__init__()
-        self.encoder_lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
-        self.fc_latent = nn.Linear(hidden_dim, latent_dim)
-        self.decoder_lstm = nn.LSTM(latent_dim, hidden_dim, batch_first=True)
-        self.fc_output = nn.Linear(hidden_dim, input_dim)
 
-    def forward(self, x):
-        _, (h_last, _) = self.encoder_lstm(x)
-        z = self.fc_latent(h_last[-1])
-        z_seq = z.unsqueeze(1).repeat(1, x.size(1), 1)
-        dec_out, _ = self.decoder_lstm(z_seq)
-        return self.fc_output(dec_out)
+# -------- Load PyTorch Models --------
+ae_state = load_torch_from_hf("secom_ae_best.pth", map_location=device)
+lstm_state = load_torch_from_hf("secom_lstm_ae.pth", map_location=device)
+
+
+ae = TabularAE(input_dim=input_dim).to(device)
+ae.load_state_dict(ae_state)
+ae.eval()
 
 lstm_ae = LSTM_AE(input_dim=input_dim).to(device)
-lstm_ae.load_state_dict(torch.load("secom_lstm_ae.pth", map_location=device))
+lstm_ae.load_state_dict(lstm_state)
 lstm_ae.eval()
+
 
 # ---------------------------------------------
 # UTILITY FUNCTIONS
