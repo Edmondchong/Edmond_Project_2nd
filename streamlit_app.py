@@ -110,14 +110,15 @@ st.caption("Smart Manufacturing AI — Powered by IsolationForest, Autoencoder, 
 uploaded_file = st.file_uploader("Upload a SECOM sensor CSV file", type=["csv"])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+    df = pd.read_csv(uploaded_file, header=None)
+    df.columns = [f"sensor_{i}" for i in range(df.shape[1])]
+
     st.write("### Uploaded Data (first 20 rows)")
     st.dataframe(df.head(20))
 
     # Preprocess
     X_imp = imputer.transform(df)
     X_scaled = scaler.transform(X_imp)
-
     # Isolation Forest score
     iso_score = -iso.decision_function(X_scaled)
     iso_mean = float(np.mean(iso_score))
