@@ -212,7 +212,7 @@ if uploaded_file:
         st.pyplot(fig)
 
         st.subheader("🔮 Fail Probability Distribution")
-        fig2, ax2 = plt.subplots(figsize=(10, 4))
+        fig2, ax2 = plt.subplots(figsize=(8, 4))
         ax2.hist(pred_fail, bins=40)
         ax2.set_xlabel("Fail Probability")
         ax2.set_ylabel("Count")
@@ -221,7 +221,7 @@ if uploaded_file:
         st.subheader("🔥 Autoencoder Reconstruction Error Heatmap (Samples x Sensors)")
         max_samples = st.slider("Number of samples to show (rows)", 10, min(200, ae_err_matrix.shape[0]), 50)
         subset_err = ae_err_matrix[:max_samples, :]
-        fig_hm, ax_hm = plt.subplots(figsize=(10, 4))
+        fig_hm, ax_hm = plt.subplots(figsize=(8, 4))
         im = ax_hm.imshow(subset_err, aspect='auto', interpolation='nearest')
         ax_hm.set_xlabel("Sensor Index")
         ax_hm.set_ylabel("Sample Index")
@@ -234,7 +234,7 @@ if uploaded_file:
         st.subheader("📉 Drift Over Time (PC1)")
 
         pc1 = X_pca[:, 0]
-        fig3, ax3 = plt.subplots(figsize=(10, 4))
+        fig3, ax3 = plt.subplots(figsize=(8, 4))
         ax3.plot(pc1, marker='.', linestyle='-')
         ax3.set_xlabel("Sample Index")
         ax3.set_ylabel("PC1")
@@ -269,7 +269,7 @@ if uploaded_file:
         # 2) PCA 3D colored by AE error
         st.markdown("### 🌐 PCA 3D Scatter (colored by AE Error)")
         X_pca_3d = X_pca[:, :3]
-        fig_3d = plt.figure(figsize=(8, 6))
+        fig_3d = plt.figure(figsize=(6, 4))
         ax_3d = fig_3d.add_subplot(111, projection='3d')
         sc3 = ax_3d.scatter(
             X_pca_3d[:, 0],
@@ -291,7 +291,7 @@ if uploaded_file:
         pc_x = st.slider("Choose X-Axis Component", 1, min(10, X_pca.shape[1]), 1)
         pc_y = st.slider("Choose Y-Axis Component", 1, min(10, X_pca.shape[1]), 2)
 
-        fig_inter, ax_inter = plt.subplots(figsize=(7, 6))
+        fig_inter, ax_inter = plt.subplots(figsize=(6, 5))
         sc_int = ax_inter.scatter(
             X_pca[:, pc_x-1],
             X_pca[:, pc_y-1],
@@ -306,7 +306,7 @@ if uploaded_file:
 
         # 4) PCA drift trajectory
         st.markdown("### 📉 PCA Drift Trajectory (PC1 vs PC2)")
-        fig_traj, ax_traj = plt.subplots(figsize=(7, 6))
+        fig_traj, ax_traj = plt.subplots(figsize=(6, 5))
         ax_traj.plot(X_pca_2d[:, 0], X_pca_2d[:, 1], '-o', markersize=3)
         ax_traj.set_xlabel("PC1")
         ax_traj.set_ylabel("PC2")
@@ -315,7 +315,7 @@ if uploaded_file:
 
         # 5) PCA anomaly heatmap (AE error)
         st.markdown("### 🔥 AE Error Heatmap on PCA (PC1 vs PC2)")
-        fig_heat, ax_heat = plt.subplots(figsize=(7, 6))
+        fig_heat, ax_heat = plt.subplots(figsize=(6, 5))
         sc_heat = ax_heat.scatter(
             X_pca_2d[:, 0],
             X_pca_2d[:, 1],
@@ -343,7 +343,7 @@ if uploaded_file:
         ucl = mean_val + 3 * std_val
         lcl = mean_val - 3 * std_val
 
-        fig_sens, ax_sens = plt.subplots(figsize=(12, 4))
+        fig_sens, ax_sens = plt.subplots(figsize=(10, 4))
         ax_sens.plot(series, marker='.', linestyle='-', label=selected_sensor)
         ax_sens.axhline(mean_val, color='green', linestyle='--', label="Mean")
         ax_sens.axhline(ucl, color='red', linestyle='--', label="UCL (Mean + 3σ)")
@@ -377,7 +377,7 @@ if uploaded_file:
         st.write("### Top Important Sensors for PASS/FAIL Classification")
         st.dataframe(top_imp.reset_index(drop=True))
 
-        fig_imp, ax_imp = plt.subplots(figsize=(10, 4))
+        fig_imp, ax_imp = plt.subplots(figsize=(8, 4))
         ax_imp.bar(top_imp["sensor"], top_imp["importance"])
         ax_imp.set_xticklabels(top_imp["sensor"], rotation=45, ha="right")
         ax_imp.set_ylabel("Importance (approx.)")
