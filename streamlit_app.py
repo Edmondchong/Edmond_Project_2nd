@@ -4,17 +4,22 @@ import numpy as np
 import joblib
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # for 3D PCA
+import io
+from datetime import datetime
 
-import plotly.express as px
-import plotly.graph_objects as go
+# For PDF generation
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 
-# SHAP optional
+# Optional SHAP
 try:
     import shap
     SHAP_AVAILABLE = True
-except:
+except ImportError:
     SHAP_AVAILABLE = False
-
 
 # ---------------------------------------------
 # PAGE CONFIG
@@ -24,9 +29,8 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # ---------------------------------------------
-# LOAD MODELS
+# LOAD MODELS & ARTIFACTS
 # ---------------------------------------------
 imputer = joblib.load("secom_imputer.joblib")
 scaler = joblib.load("secom_scaler.joblib")
@@ -38,10 +42,7 @@ clf = joblib.load("secom_rf_clf.joblib")
 ae_meta = joblib.load("secom_ae_meta.joblib")
 input_dim = ae_meta["input_dim"]
 
-
-# ---------------------------------------------
-# AUTOENCODER CLASSES
-# ---------------------------------------------
+# ---- Tabular Autoencoder ----
 class TabularAE(nn.Module):
     def __init__(self, input_dim, latent_dim=32):
         super().__init__()
@@ -60,19 +61,15 @@ class TabularAE(nn.Module):
         z = self.encoder(x)
         return self.decoder(z)
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load Tabular AE
 ae = TabularAE(input_dim=input_dim).to(device)
 ae.load_state_dict(torch.load("secom_ae_best.pth", map_location=device))
 ae.eval()
 
-
-# LSTM-AE metadata
+# ---- LSTM Autoencoder ----
 lstm_meta = joblib.load("secom_lstm_meta.joblib")
 window_size = lstm_meta["window_size"]
-
 
 class LSTM_AE(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, latent_dim=64):
@@ -85,37 +82,35 @@ class LSTM_AE(nn.Module):
     def forward(self, x):
         _, (h_last, _) = self.encoder_lstm(x)
         z = self.fc_latent(h_last[-1])
-        z_rep = z.unsqueeze(1).repeat(1, x.size(1), 1)
-        dec_out, _ = self.decoder_lstm(z_rep)
+        z_seq = z.unsqueeze(1).repeat(1, x.size(1), 1)
+        dec_out, _ = self.decoder_lstm(z_seq)
         return self.fc_output(dec_out)
 
-
-# Load LSTM-AE
 lstm_ae = LSTM_AE(input_dim=input_dim).to(device)
 lstm_ae.load_state_dict(torch.load("secom_lstm_ae.pth", map_location=device))
 lstm_ae.eval()
 
-
 # ---------------------------------------------
 # UTILITY FUNCTIONS
 # ---------------------------------------------
-def compute_tabular_ae_score(model, X_scaled):
+def compute_tabular_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
+    """AE anomaly score (per sample) = MSE over all sensors."""
     X_t = torch.from_numpy(X_scaled).float().to(device)
     with torch.no_grad():
         recon = model(X_t)
-        err = torch.mean((X_t - recon)**2, dim=1)
-    return err.cpu().numpy()
+        mse = torch.mean((X_t - recon)**2, dim=1)
+    return mse.cpu().numpy()
 
-
-def compute_tabular_ae_recon_and_error(model, X_scaled):
+def compute_tabular_ae_recon_and_error(model, X_scaled: np.ndarray):
+    """Return reconstruction and per-sensor squared error."""
     X_t = torch.from_numpy(X_scaled).float().to(device)
     with torch.no_grad():
         recon = model(X_t)
         err = (X_t - recon)**2
     return recon.cpu().numpy(), err.cpu().numpy()
 
-
-def compute_lstm_ae_score(model, X_scaled):
+def compute_lstm_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
+    """Single LSTM AE score for the latest window."""
     if X_scaled.shape[0] < window_size:
         return np.array([0.0])
     seq = X_scaled[-window_size:]
@@ -125,8 +120,8 @@ def compute_lstm_ae_score(model, X_scaled):
         mse = torch.mean((seq - recon)**2)
     return np.array([float(mse)])
 
-
 def classify_health(iso_mean, ae_mean, lstm_mean):
+    """Simple rule-based health classification."""
     if iso_mean > 0.8 or ae_mean > 0.8 or lstm_mean > 1.2:
         return "🔴 CRITICAL"
     elif iso_mean > 0.5 or ae_mean > 0.5 or lstm_mean > 0.9:
@@ -134,39 +129,150 @@ def classify_health(iso_mean, ae_mean, lstm_mean):
     else:
         return "🟢 NORMAL"
 
-
 def compute_sensor_feature_importance(pca_model, rf_model):
-    pc_imp = rf_model.feature_importances_
-    comp = pca_model.components_
-    return np.abs(comp.T @ pc_imp)
+    """
+    Approximate sensor-level importance:
+    - rf feature_importances_ are over PCA components
+    - pca.components_ maps components → original sensors
+    We combine them to get importance per sensor.
+    """
+    pc_importance = rf_model.feature_importances_          # shape: (n_components,)
+    components = pca_model.components_                     # shape: (n_components, n_features)
+    sensor_importance = np.abs(components.T @ pc_importance)
+    return sensor_importance  # (n_features,)
 
+def generate_pdf_report(
+    iso_mean, ae_mean, lstm_mean, fail_mean, health,
+    selected_sensor_name, selected_sensor_series
+):
+    """Generate a multi-page PDF summary and return bytes."""
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
 
-# SHAP FIXED VERSION ✔️
-def compute_sensor_shap_importance(pca_model, shap_importance_pca):
-    components = pca_model.components_      # shape (n_components, n_features)
-    n_pca = components.shape[0]             # use only first N SHAP values
-    shap_trimmed = shap_importance_pca[:n_pca]
-    return np.abs(components.T @ shap_trimmed)
+    # --- Page 1: Overview ---
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, height - 72, "SECOM Sensor Drift & Anomaly Report")
 
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 100, f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    c.drawString(72, height - 115, "System: IsolationForest + Autoencoder + LSTM AE + PCA + RandomForest")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(72, height - 145, "1. Key Metrics")
+
+    c.setFont("Helvetica", 11)
+    c.drawString(90, height - 165, f"• IsolationForest mean score: {iso_mean:.4f}")
+    c.drawString(90, height - 180, f"• AE reconstruction error mean: {ae_mean:.4f}")
+    c.drawString(90, height - 195, f"• LSTM AE drift score: {lstm_mean:.4f}")
+    c.drawString(90, height - 210, f"• Fail probability mean: {fail_mean*100:.2f}%")
+    c.drawString(90, height - 230, f"• Overall health classification: {health}")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(72, height - 260, "2. Interpretation Summary")
+    c.setFont("Helvetica", 10)
+    c.drawString(90, height - 280, "- Higher scores indicate more abnormal behavior.")
+    c.drawString(90, height - 295, "- Fail probability is estimated by the RandomForest classifier.")
+    c.drawString(90, height - 310, "- Health label is derived from rule-based thresholds on anomaly scores.")
+
+    c.showPage()
+
+    # --- Page 2: SPC Summary for Selected Sensor ---
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(72, height - 72, "Sensor SPC Snapshot")
+
+    c.setFont("Helvetica", 11)
+    c.drawString(72, height - 95, f"Selected Sensor: {selected_sensor_name}")
+
+    mean_val = float(np.nanmean(selected_sensor_series))
+    std_val = float(np.nanstd(selected_sensor_series))
+    ucl = mean_val + 3 * std_val
+    lcl = mean_val - 3 * std_val
+
+    c.setFont("Helvetica", 10)
+    c.drawString(90, height - 120, f"Mean: {mean_val:.4f}")
+    c.drawString(90, height - 135, f"Std Dev: {std_val:.4f}")
+    c.drawString(90, height - 150, f"UCL (Mean + 3σ): {ucl:.4f}")
+    c.drawString(90, height - 165, f"LCL (Mean - 3σ): {lcl:.4f}")
+
+    # Optionally, embed a simple SPC chart image
+    try:
+        fig_spc, ax_spc = plt.subplots(figsize=(4, 2))
+        ax_spc.plot(selected_sensor_series, marker='.', linestyle='-', linewidth=0.8)
+        ax_spc.axhline(mean_val, color='green', linestyle='--', linewidth=0.8)
+        ax_spc.axhline(ucl, color='red', linestyle='--', linewidth=0.8)
+        ax_spc.axhline(lcl, color='red', linestyle='--', linewidth=0.8)
+        ax_spc.set_title(f"{selected_sensor_name} SPC")
+        ax_spc.set_xlabel("Index")
+        ax_spc.set_ylabel("Value")
+        fig_spc.tight_layout()
+
+        img_buf = io.BytesIO()
+        fig_spc.savefig(img_buf, format="png", dpi=150)
+        plt.close(fig_spc)
+        img_buf.seek(0)
+        img = ImageReader(img_buf)
+        # Draw image
+        img_width = 400
+        img_height = 200
+        c.drawImage(img, 72, height - 380, width=img_width, height=img_height, preserveAspectRatio=True, mask="auto")
+    except Exception:
+        # If plotting fails, at least we still have text
+        pass
+
+    c.showPage()
+
+    # --- Page 3: Notes ---
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(72, height - 72, "Engineer Notes")
+
+    c.setFont("Helvetica", 10)
+    text = c.beginText(72, height - 100)
+    text.textLines([
+        "This report summarizes the anomaly detection status for the SECOM batch.",
+        "",
+        "IsolationForest and Autoencoder are unsupervised models trained to learn",
+        "the normal sensor patterns. Higher anomaly scores indicate that the current",
+        "batch deviates more from the historical normal operating conditions.",
+        "",
+        "The LSTM Autoencoder captures temporal drift in sliding windows of data.",
+        "Significantly high LSTM AE error suggests gradual sensor or equipment drift",
+        "that may not be detected by static models alone.",
+        "",
+        "The SPC chart shows if the selected sensor has values beyond ±3σ limits,",
+        "which is a common statistical rule used in manufacturing to flag out-of-control",
+        "behavior.",
+        "",
+        "Use this report together with domain knowledge and engineering judgment to",
+        "decide if a maintenance action or line inspection is required."
+    ])
+    c.drawText(text)
+
+    c.showPage()
+    c.save()
+
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
 
 # ---------------------------------------------
 # UI
 # ---------------------------------------------
 st.title("🔧 SECOM Sensor Drift & Anomaly Detection Dashboard")
-st.caption("Smart Manufacturing AI — IsolationForest • AE • LSTM-AE • PCA • RF • SHAP • SPC • Clustering")
+st.caption("Smart Manufacturing AI — IsolationForest · Autoencoder · LSTM-AE · PCA · RandomForest")
 
-uploaded_file = st.file_uploader("Upload SECOM CSV", type=["csv"])
+uploaded_file = st.file_uploader("Upload a SECOM sensor CSV file", type=["csv"])
 
 if uploaded_file:
 
+    # ----------------- LOAD & PREPROCESS -----------------
     df = pd.read_csv(uploaded_file, header=None)
     df.columns = [f"sensor_{i}" for i in range(df.shape[1])]
 
-    # Preprocess
     X_imp = imputer.transform(df)
     X_scaled = scaler.transform(X_imp)
 
-    # Scores
+    # --- Scores from models ---
     iso_score = -iso.decision_function(X_scaled)
     iso_mean = float(np.mean(iso_score))
 
@@ -176,168 +282,315 @@ if uploaded_file:
     lstm_score = compute_lstm_ae_score(lstm_ae, X_scaled)
     lstm_mean = float(np.mean(lstm_score))
 
+    # Classifier output on PCA features
     X_pca = pca_clf.transform(X_scaled)
     pred_fail = clf.predict_proba(X_pca)[:, 1]
     fail_mean = float(np.mean(pred_fail))
 
-    # AE error matrix
-    _, ae_err_matrix = compute_tabular_ae_recon_and_error(ae, X_scaled)
-
-    # Sensor importance (RF)
-    sensor_importance = compute_sensor_feature_importance(pca_clf, clf)
-
-    # Health
+    # Health label
     health = classify_health(iso_mean, ae_mean, lstm_mean)
 
-    # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "📊 Overview",
-        "🧪 Anomaly Scores",
-        "📉 Drift",
-        "🎯 PCA Visualization",
-        "📡 SPC Charts",
-        "⭐ Feature Importance",
-        "🧩 Clusters",
-        "🔍 SHAP Explainability",
-    ])
+    # Precompute AE per-sensor error for heatmap (used later)
+    _, ae_err_matrix = compute_tabular_ae_recon_and_error(ae, X_scaled)  # shape: (N, F)
 
-    # ---------------- TAB 1 ----------------
+    # Sensor-level feature importance (RandomForest + PCA)
+    sensor_importance = compute_sensor_feature_importance(pca_clf, clf)
+
+    # ---------------------------------------------
+    # TABS
+    # ---------------------------------------------
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+        [
+            "📊 Overview",
+            "🧪 Anomaly Scores",
+            "📉 Drift Analysis",
+            "🎯 PCA Visualization",
+            "📡 Sensor Trends / SPC",
+            "⭐ Feature Importance",
+            "🔍 SHAP (PCA-level)",
+            "📄 Export PDF",
+        ]
+    )
+
+    # ------------------- TAB 1: OVERVIEW -------------------
     with tab1:
-        st.subheader("📊 Summary")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("IsoForest", f"{iso_mean:.4f}")
-        c2.metric("AE Err", f"{ae_mean:.4f}")
-        c3.metric("LSTM Err", f"{lstm_mean:.4f}")
-        c4.metric("Fail Prob", f"{fail_mean*100:.2f}%")
+        st.subheader("📊 Machine Health Summary")
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("IsolationForest Score", f"{iso_mean:.4f}")
+        col2.metric("AE Reconstruction Error", f"{ae_mean:.4f}")
+        col3.metric("LSTM AE Error", f"{lstm_mean:.4f}")
+        col4.metric("Fail Probability", f"{fail_mean*100:.2f}%")
+
+        st.markdown("### ⚠️ Overall Machine State")
         st.markdown(f"## {health}")
+
+        st.markdown("### Raw Uploaded Data (first 20 rows)")
         st.dataframe(df.head(20))
 
-    # ---------------- TAB 2 ----------------
+    # ---------------- TAB 2: ANOMALY SCORES -----------------
     with tab2:
-        st.subheader("🧪 IsoForest + AE Score Distribution")
+        st.subheader("🧪 Histogram of Anomaly Scores")
 
-        fig1 = go.Figure()
-        fig1.add_trace(go.Histogram(x=iso_score, nbinsx=40, opacity=0.6, name="IsoForest"))
-        fig1.add_trace(go.Histogram(x=ae_score, nbinsx=40, opacity=0.6, name="AE Error"))
-        fig1.update_layout(barmode="overlay", height=300)
-        st.plotly_chart(fig1, use_container_width=True, key="iso_ae")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.hist(iso_score, bins=40, alpha=0.6, label="IsolationForest")
+        ax.hist(ae_score, bins=40, alpha=0.6, label="Autoencoder")
+        ax.legend()
+        ax.set_xlabel("Score")
+        ax.set_ylabel("Count")
+        st.pyplot(fig)
 
-        st.subheader("Fail Probability Distribution")
-        fig2 = px.histogram(pred_fail, nbins=40, height=300)
-        st.plotly_chart(fig2, use_container_width=True, key="fail_hist")
+        st.subheader("🔮 Fail Probability Distribution")
+        fig2, ax2 = plt.subplots(figsize=(10, 4))
+        ax2.hist(pred_fail, bins=40)
+        ax2.set_xlabel("Fail Probability")
+        ax2.set_ylabel("Count")
+        st.pyplot(fig2)
 
-        st.subheader("AE Error Heatmap (Sensors × Samples)")
-        fig3 = px.imshow(ae_err_matrix[:50], aspect="auto", height=300)
-        st.plotly_chart(fig3, use_container_width=True, key="ae_heatmap")
+        st.subheader("🔥 Autoencoder Reconstruction Error Heatmap (Samples x Sensors)")
+        max_samples = st.slider("Number of samples to show (rows)", 10, min(200, ae_err_matrix.shape[0]), 50)
+        subset_err = ae_err_matrix[:max_samples, :]
+        fig_hm, ax_hm = plt.subplots(figsize=(10, 4))
+        im = ax_hm.imshow(subset_err, aspect='auto', interpolation='nearest')
+        ax_hm.set_xlabel("Sensor Index")
+        ax_hm.set_ylabel("Sample Index")
+        ax_hm.set_title("AE Per-Sensor Squared Error")
+        fig_hm.colorbar(im, ax=ax_hm, label="Error")
+        st.pyplot(fig_hm)
 
-    # ---------------- TAB 3 ----------------
+    # --------------- TAB 3: DRIFT ANALYSIS ------------------
     with tab3:
-        st.subheader("📉 PC1 Drift")
-        fig_pc = px.line(y=X_pca[:, 0], height=300)
-        st.plotly_chart(fig_pc, use_container_width=True, key="pc1")
+        st.subheader("📉 Drift Over Time (PC1)")
 
-    # ---------------- TAB 4 ----------------
+        pc1 = X_pca[:, 0]
+        fig3, ax3 = plt.subplots(figsize=(10, 4))
+        ax3.plot(pc1, marker='.', linestyle='-')
+        ax3.set_xlabel("Sample Index")
+        ax3.set_ylabel("PC1")
+        ax3.set_title("PC1 Drift Over Time")
+        ax3.grid(True)
+        st.pyplot(fig3)
+
+        st.subheader("📉 LSTM AE Drift (Single Window Score)")
+        st.write(f"LSTM AE Drift Score (latest window, size={window_size}): **{lstm_mean:.6f}**")
+
+    # --------------- TAB 4: PCA VISUALIZATION (ADVANCED) ---
     with tab4:
-        st.subheader("🎯 PCA 2D")
-        fig_2d = px.scatter(x=X_pca[:, 0], y=X_pca[:, 1],
-                            color=pred_fail, color_continuous_scale="RdBu", height=300)
-        st.plotly_chart(fig_2d, use_container_width=True, key="pca2d")
+        st.subheader("🎯 PCA Advanced Visualization")
 
-        st.subheader("🌐 PCA 3D")
-        fig_3d = px.scatter_3d(
-            x=X_pca[:, 0], y=X_pca[:, 1], z=X_pca[:, 2],
-            color=ae_score, color_continuous_scale="Inferno", height=350
+        # 1) PCA 2D colored by fail probability
+        st.markdown("### 📌 PCA 2D Scatter (colored by Fail Probability)")
+        X_pca_2d = X_pca[:, :2]
+        fig4, ax4 = plt.subplots(figsize=(7, 6))
+        sc = ax4.scatter(
+            X_pca_2d[:, 0],
+            X_pca_2d[:, 1],
+            c=pred_fail,
+            cmap="coolwarm",
+            s=15
         )
-        st.plotly_chart(fig_3d, use_container_width=True, key="pca3d")
+        plt.colorbar(sc, ax=ax4, label="Fail Probability")
+        ax4.set_xlabel("PC1")
+        ax4.set_ylabel("PC2")
+        ax4.set_title("PCA 2D — Fail Probability")
+        st.pyplot(fig4)
 
-        st.subheader("Interactive PCA Viewer")
-        pcx = st.slider("PC X", 1, X_pca.shape[1], 1)
-        pcy = st.slider("PC Y", 1, X_pca.shape[1], 2)
-        fig_int = px.scatter(
-            x=X_pca[:, pcx-1], y=X_pca[:, pcy-1],
-            color=pred_fail, height=300
+        # 2) PCA 3D colored by AE error
+        st.markdown("### 🌐 PCA 3D Scatter (colored by AE Error)")
+        X_pca_3d = X_pca[:, :3]
+        fig_3d = plt.figure(figsize=(8, 6))
+        ax_3d = fig_3d.add_subplot(111, projection='3d')
+        sc3 = ax_3d.scatter(
+            X_pca_3d[:, 0],
+            X_pca_3d[:, 1],
+            X_pca_3d[:, 2],
+            c=ae_score,
+            cmap="inferno",
+            s=20
         )
-        st.plotly_chart(fig_int, use_container_width=True, key="pca_int")
+        fig_3d.colorbar(sc3, ax=ax_3d, shrink=0.6, label="AE Error")
+        ax_3d.set_xlabel("PC1")
+        ax_3d.set_ylabel("PC2")
+        ax_3d.set_zlabel("PC3")
+        ax_3d.set_title("PCA 3D — AE Error")
+        st.pyplot(fig_3d)
 
-    # ---------------- TAB 5 ----------------
+        # 3) Interactive PCA components
+        st.markdown("### 🎛 Interactive PCA Component Viewer")
+        pc_x = st.slider("Choose X-Axis Component", 1, min(10, X_pca.shape[1]), 1)
+        pc_y = st.slider("Choose Y-Axis Component", 1, min(10, X_pca.shape[1]), 2)
+
+        fig_inter, ax_inter = plt.subplots(figsize=(7, 6))
+        sc_int = ax_inter.scatter(
+            X_pca[:, pc_x-1],
+            X_pca[:, pc_y-1],
+            c=pred_fail,
+            cmap="coolwarm",
+            s=15
+        )
+        ax_inter.set_xlabel(f"PC{pc_x}")
+        ax_inter.set_ylabel(f"PC{pc_y}")
+        ax_inter.set_title(f"PCA Projection PC{pc_x} vs PC{pc_y}")
+        st.pyplot(fig_inter)
+
+        # 4) PCA drift trajectory
+        st.markdown("### 📉 PCA Drift Trajectory (PC1 vs PC2)")
+        fig_traj, ax_traj = plt.subplots(figsize=(7, 6))
+        ax_traj.plot(X_pca_2d[:, 0], X_pca_2d[:, 1], '-o', markersize=3)
+        ax_traj.set_xlabel("PC1")
+        ax_traj.set_ylabel("PC2")
+        ax_traj.set_title("PCA Drift Path Over Time")
+        st.pyplot(fig_traj)
+
+        # 5) PCA anomaly heatmap (AE error)
+        st.markdown("### 🔥 AE Error Heatmap on PCA (PC1 vs PC2)")
+        fig_heat, ax_heat = plt.subplots(figsize=(7, 6))
+        sc_heat = ax_heat.scatter(
+            X_pca_2d[:, 0],
+            X_pca_2d[:, 1],
+            c=ae_score,
+            cmap="inferno",
+            s=20
+        )
+        plt.colorbar(sc_heat, ax=ax_heat, label="AE Error")
+        ax_heat.set_xlabel("PC1")
+        ax_heat.set_ylabel("PC2")
+        ax_heat.set_title("AE Error Heatmap in PCA Space")
+        st.pyplot(fig_heat)
+
+    # --------- TAB 5: SENSOR TRENDS + SPC (3-SIGMA) ---------
     with tab5:
-        st.subheader("📡 Sensor SPC Chart")
-        sensor_name = st.selectbox("Select sensor", df.columns)
+        st.subheader("📡 Sensor Trend & SPC Chart")
 
-        series = df[sensor_name].astype(float).values
+        sensor_names = df.columns.tolist()
+        selected_sensor = st.selectbox("Choose a sensor", sensor_names)
+
+        series = df[selected_sensor].astype(float).values
         mean_val = np.nanmean(series)
         std_val = np.nanstd(series)
-        ucl = mean_val + 3*std_val
-        lcl = mean_val - 3*std_val
 
-        fig_spc = go.Figure()
-        fig_spc.add_trace(go.Scatter(y=series, mode="lines+markers"))
-        fig_spc.add_hline(y=mean_val, line_color="green")
-        fig_spc.add_hline(y=ucl, line_color="red")
-        fig_spc.add_hline(y=lcl, line_color="red")
-        fig_spc.update_layout(height=300)
-        st.plotly_chart(fig_spc, use_container_width=True, key="spc")
+        ucl = mean_val + 3 * std_val
+        lcl = mean_val - 3 * std_val
 
-    # ---------------- TAB 6 ----------------
+        fig_sens, ax_sens = plt.subplots(figsize=(12, 4))
+        ax_sens.plot(series, marker='.', linestyle='-', label=selected_sensor)
+        ax_sens.axhline(mean_val, color='green', linestyle='--', label="Mean")
+        ax_sens.axhline(ucl, color='red', linestyle='--', label="UCL (Mean + 3σ)")
+        ax_sens.axhline(lcl, color='red', linestyle='--', label="LCL (Mean - 3σ)")
+        ax_sens.set_title(f"{selected_sensor} — SPC Chart")
+        ax_sens.set_xlabel("Sample Index")
+        ax_sens.set_ylabel("Sensor Value")
+        ax_sens.legend()
+        ax_sens.grid(True)
+        st.pyplot(fig_sens)
+
+        # Highlight out-of-control points
+        out_of_control_idx = np.where((series > ucl) | (series < lcl))[0]
+        st.write(f"Out-of-control points (beyond 3σ): {len(out_of_control_idx)}")
+        if len(out_of_control_idx) > 0:
+            st.write("Indices:", out_of_control_idx.tolist()[:50])
+
+    # ------------- TAB 6: FEATURE IMPORTANCE ----------------
     with tab6:
-        st.subheader("⭐ Sensor Importance (RF + PCA)")
+        st.subheader("⭐ Feature Importance (Sensor-Level Approximation)")
+
+        # Build DataFrame of importance
         imp_df = pd.DataFrame({
-            "sensor": df.columns,
+            "sensor": [f"sensor_{i}" for i in range(sensor_importance.shape[0])],
             "importance": sensor_importance
         }).sort_values("importance", ascending=False)
 
-        st.dataframe(imp_df.head(20))
+        top_n = st.slider("Show top N sensors", 5, 50, 15)
+        top_imp = imp_df.head(top_n)
 
-        fig_imp = px.bar(imp_df.head(20), x="sensor", y="importance", height=300)
-        st.plotly_chart(fig_imp, use_container_width=True, key="feat_imp")
+        st.write("### Top Important Sensors for PASS/FAIL Classification")
+        st.dataframe(top_imp.reset_index(drop=True))
 
-    # ---------------- TAB 7 ----------------
+        fig_imp, ax_imp = plt.subplots(figsize=(10, 4))
+        ax_imp.bar(top_imp["sensor"], top_imp["importance"])
+        ax_imp.set_xticklabels(top_imp["sensor"], rotation=45, ha="right")
+        ax_imp.set_ylabel("Importance (approx.)")
+        ax_imp.set_title("Top Sensor Importance (via PCA + RF)")
+        st.pyplot(fig_imp)
+
+    # ------------- TAB 7: SHAP (PCA-level only) -------------
     with tab7:
-        st.subheader("🧩 KMeans Clusters (Root Cause)")
-        from sklearn.cluster import KMeans
-
-        k = st.slider("Clusters", 2, 8, 3)
-        km = KMeans(n_clusters=k, n_init="auto").fit(X_pca)
-        labels = km.labels_
-
-        fig_clus = px.scatter(
-            x=X_pca[:, 0], y=X_pca[:, 1],
-            color=labels.astype(str), height=300
-        )
-        st.plotly_chart(fig_clus, use_container_width=True, key="clusters")
-
-    # ---------------- TAB 8 ----------------
-    with tab8:
-        st.subheader("🔍 SHAP Explainability")
+        st.subheader("🔍 SHAP Explainability (PCA Feature Space)")
 
         if not SHAP_AVAILABLE:
-            st.warning("Install shap in requirements.txt")
+            st.warning("SHAP is not installed. Add `shap` to your requirements.txt to enable this tab.")
         else:
-            st.write("Explaining RF model (Fail probability)")
+            st.write("This explains the RandomForest classifier in the PCA feature space (PC1, PC2, ...).")
 
-            # SHAP background sample
-            bg = X_pca[:200]
+            # Subsample for speed if large
+            max_bg = min(300, X_pca.shape[0])
+            bg_idx = np.random.choice(X_pca.shape[0], size=max_bg, replace=False)
+            X_bg = X_pca[bg_idx]
+
             explainer = shap.TreeExplainer(clf)
-            shap_vals = explainer.shap_values(bg)[1]
-            shap_imp_pca = np.mean(np.abs(shap_vals), axis=0)
+            shap_values = explainer.shap_values(X_bg)[1]  # class 1 (FAIL)
+            # Mean |SHAP| per PCA component
+            shap_importance_pca = np.mean(np.abs(shap_values), axis=0)
 
-            # FIX: trim SHAP to PCA components
-            components = pca_clf.components_
-            n_pca = components.shape[0]
-            shap_imp_pca = shap_imp_pca[:n_pca]
-
-            sensor_shap = compute_sensor_shap_importance(pca_clf, shap_imp_pca)
-
+            pc_names = [f"PC{i+1}" for i in range(len(shap_importance_pca))]
             shap_df = pd.DataFrame({
-                "sensor": df.columns,
-                "importance": sensor_shap
+                "PC": pc_names,
+                "importance": shap_importance_pca
             }).sort_values("importance", ascending=False)
 
-            st.dataframe(shap_df.head(20))
+            top_n_pc = st.slider("Top N PCA components", 3, len(pc_names), min(10, len(pc_names)))
+            top_shap = shap_df.head(top_n_pc)
 
-            fig_shap = px.bar(shap_df.head(20), x="sensor", y="importance", height=300)
-            st.plotly_chart(fig_shap, use_container_width=True, key="shap_bar")
+            st.write("### Top PCA Components Driving FAIL Probability")
+            st.dataframe(top_shap.reset_index(drop=True))
 
+            fig_shap, ax_shap = plt.subplots(figsize=(8, 4))
+            ax_shap.bar(top_shap["PC"], top_shap["importance"])
+            ax_shap.set_ylabel("Mean |SHAP|")
+            ax_shap.set_title("Top PCA Components by SHAP Importance")
+            ax_shap.set_xticklabels(top_shap["PC"], rotation=45, ha="right")
+            st.pyplot(fig_shap)
+
+            st.markdown(
+                """
+                **Note:** This SHAP analysis is done in PCA space, not directly on raw sensors.
+                Higher importance means that variations along that principal component strongly
+                influence the FAIL probability.
+                """
+            )
+
+    # ------------- TAB 8: EXPORT PDF REPORT ----------------
+    with tab8:
+        st.subheader("📄 Export PDF Report")
+
+        st.write("This will generate a multi-page PDF summarizing key anomaly and SPC information.")
+
+        # Reuse the selected sensor from Tab 5 if possible, else default to first
+        sensor_names = df.columns.tolist()
+        sensor_for_report = st.selectbox(
+            "Choose a sensor to highlight in the report",
+            sensor_names,
+            index=0
+        )
+        series_for_report = df[sensor_for_report].astype(float).values
+
+        if st.button("Generate PDF Report"):
+            pdf_bytes = generate_pdf_report(
+                iso_mean=iso_mean,
+                ae_mean=ae_mean,
+                lstm_mean=lstm_mean,
+                fail_mean=fail_mean,
+                health=health,
+                selected_sensor_name=sensor_for_report,
+                selected_sensor_series=series_for_report
+            )
+
+            st.download_button(
+                label="📥 Download SECOM Anomaly Report (PDF)",
+                data=pdf_bytes,
+                file_name="secom_anomaly_report.pdf",
+                mime="application/pdf"
+            )
 
 else:
-    st.info("📥 Upload a SECOM CSV file to begin.")
+    st.info("Upload a CSV file to begin analysis.")
