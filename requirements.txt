@@ -10,3 +10,4 @@ xgboost
 shap
 plotly
 reportlab
+huggingface_hub==0.24.0
