@@ -3,7 +3,7 @@
 
 ### 👉 Try Demo: 
 
-🖼️ Use this for testing demo >>> [Images_to_test_demo](./Images_to_test_demo)  
+🖼️ Use this for testing demo >>> [Files_to_test_demo](./Files_to_test_demo)  
 
 ### 🤝 Full project is private to prevent unauthorized copying, but Happy to share upon "Recruiter Request"  
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
