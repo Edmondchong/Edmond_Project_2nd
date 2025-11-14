@@ -1,7 +1,7 @@
 
 # Edmond Chong's 2nd Project
 
-### 👉 Try Demo: 
+### 👉 Try Demo: https://edmondproject2nd-9ismn9qwxrkbrm7tsjuvye.streamlit.app/
 
 🖼️ Use this for testing demo >>> [Files_to_test_demo](./Files_to_test_demo)  
 
