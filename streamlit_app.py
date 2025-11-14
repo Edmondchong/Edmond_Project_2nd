@@ -15,12 +15,15 @@ st.set_page_config(
     layout="wide"
 )
 
+
 # ---------------------------------------------
 # LOAD MODELS & ARTIFACTS (from private HuggingFace repo)
 # ---------------------------------------------
 from huggingface_hub import hf_hub_download
 
-REPO_ID = "https://huggingface.co/EdmondChong/SensorDrift"   
+REPO_ID = "EdmondChong/SensorDrift"   
+
+device = "cpu"
 
 def load_joblib_from_hf(filename):
     path = hf_hub_download(
