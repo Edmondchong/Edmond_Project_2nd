@@ -9,72 +9,103 @@
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 *** The Streamlit demo may go idle after a period of inactivity — click “Yes, get this app back up” to restart it. Please note that it may take a short while to reload.
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-📖 Project Overview: **🏭 Wafer Defect Classification for Semiconductor Manufacturing SMAI**. 
+📖 Project Overview: **🏭 Equipment Drift & Sensor Anomaly Detection for Semiconductor SMAI**. 
 
-This project focuses on detecting wafer map defects using AI to support Smart Manufacturing AI (SMAI) applications in semiconductor fabs.
-It classifies wafer maps into 6 defect types and uses XAI to highlight defect-critical regions for engineering diagnosis.
+This project focuses on detecting equipment drift and sensor anomalies using high-dimensional SECOM sensor data — a real-world manufacturing dataset often used in semiconductor research.
 
-This system mirrors real-world use cases such as yield analysis, defect clustering, and inline inspection.
+It replicates common fab-level SMAI applications, including:
+
+sensor drift detection
+
+OOC/OOS monitoring
+
+chamber stability analysis
+
+equipment health prediction
+
+SPC-based reliability monitoring
+
+This system aligns with tasks performed in Micron, TI, GlobalFoundries, and SSMC SMAI engineering teams.
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 🔬 Key Approaches
 
-EfficientNet-B0 Transfer Learning
+Multi-Model Drift & Anomaly Detection
 
-Used pretrained EfficientNet-B0 to classify wafer defects with 87.01% accuracy, optimizing for both accuracy and inference speed.
+Built a 4-model AI system using:
 
-6-Class Wafer Defect Taxonomy
+IsolationForest (statistical anomaly detection)
 
-Detected industry-inspired wafer map patterns:
-Center, Edge-Loc, Edge-Ring, Loc, Scratch, None
+Autoencoder (Tabular AE)
 
-Explainable AI (XAI)
+LSTM-AE for time-series drift patterns
 
-Integrated Grad-CAM to visualize defect-driving regions, helping engineers understand failure mechanisms.
+PCA Drift Analysis
+
+Random Forest for PASS/FAIL classification
+
+Statistical Process Control (SPC)
+
+Implemented industrial SPC rules:
+
+UCL / LCL (3-sigma) thresholds
+
+Out-of-Control (OOC) signal detection
+
+Out-of-Specification (OOS) deviation alerts
+
+Early identification of equipment instability
+
+Interpretability & Engineering Insights
+
+PCA drift trajectory visualization
+
+AE reconstruction error heatmaps
+
+Sensor-importance rankings via PCA → RF mapping
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ⚙️ Tech Stack
 
 Python
-
+NumPy / Pandas / scikit-learn
 PyTorch
-
-EfficientNet-B0 (Transfer Learning)
-
-OpenCV
-
-Grad-CAM (XAI)
-
+Autoencoder (Tabular)
+LSTM-AE
+PCA
+SPC (3-sigma UCL/LCL)
 Streamlit
-
-Docker / AWS / Kubernetes
-
+Docker
+AWS EC2
+HuggingFace Hub (Private Artifacts)
 CI/CD (GitHub Actions)
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ✨ Features
 
-Built a 6-class wafer defect classifier using EfficientNet-B0.
+Built a multi-model equipment drift and anomaly detection pipeline.
 
-Achieved 87.01% accuracy on the WM811K wafer map dataset.
+Real-time SPC monitoring for OOC/OOS sensor behavior.
 
-Applied Grad-CAM to highlight defect regions for interpretability.
+PCA-based drift trajectory visualization across time.
 
-Clean and interactive Streamlit UI for quick testing.
+AE & LSTM-AE reconstruction heatmaps for sensor-level insights.
 
-Deployed on cloud infrastructure (Streamlit + Docker + AWS EC2).
+Full analytics dashboard: anomaly histograms, PCA maps, sensor-importance ranking.
 
-Kubernetes + CI/CD support for production readiness.
+Secure model loading from private HuggingFace repository.
+
+Deployed as a cloud-based dashboard via Streamlit + Docker + AWS.
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 📌 Notes for Recruiters
 
-The GitHub repo contains only the demo app code to protect model IP and avoid unauthorized copying.
+The GitHub repo contains only the demo app code to protect model IP and prevent unauthorized copying.
 
-The full training pipeline (data preprocessing, augmentation, training scripts, experiments, deployment stack, and evaluation) is kept private, but I am happy to share it upon recruiter request.
+The full training pipeline (data preprocessing, feature engineering, PCA modeling, AE/LSTM-AE training, Random Forest classifier, experiments, and deployment scripts) is kept private, but I am happy to share it upon recruiter request.
 
-This project demonstrates end-to-end AI engineering skills, including:
-→ data processing → model training → evaluation → explainability → deployment.
+This project demonstrates full-stack SMAI capabilities:
+→ sensor data processing → drift modeling → SPC monitoring → anomaly detection → dashboard → deployment.
 
 
