@@ -23,53 +23,74 @@ from huggingface_hub import hf_hub_download
 REPO_ID = "EdmondChong/SensorDrift"
 device = "cpu"
 
-class LSTM_AE(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128, latent_dim=64, num_layers=1):
-        super().__init__()
-
-        # ENCODER
-        self.encoder_lstm = nn.LSTM(
-            input_dim,
-            hidden_dim,
-            num_layers=num_layers,
-            batch_first=True
-        )
-
-        self.fc_latent = nn.Linear(hidden_dim, latent_dim)
-
-        # DECODER
-        self.decoder_lstm = nn.LSTM(
-            latent_dim,
-            hidden_dim,
-            num_layers=num_layers,
-            batch_first=True
-        )
-
-        self.fc_output = nn.Linear(hidden_dim, input_dim)
-
-
+# ---------------------------------------------
+# MODEL DEFINITIONS (MUST MATCH TRAINING CODE)
+# ---------------------------------------------
 class TabularAE(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, latent_dim=32):
         super().__init__()
+
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(128, 32)
+            nn.Linear(128, latent_dim),
         )
+
         self.decoder = nn.Sequential(
-            nn.Linear(32, 128),
+            nn.Linear(latent_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 256),
             nn.ReLU(),
-            nn.Linear(256, input_dim)
+            nn.Linear(256, input_dim),
         )
 
     def forward(self, x):
         z = self.encoder(x)
-        out = self.decoder(z)
-        return out
+        recon = self.decoder(z)
+        return recon
+
+
+class LSTM_AE(nn.Module):
+    def __init__(self, input_dim, hidden_dim=128, latent_dim=64, num_layers=1):
+        super().__init__()
+
+        # ENCODER (matches encoder_lstm.* in checkpoint)
+        self.encoder_lstm = nn.LSTM(
+            input_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+
+        # Hidden → latent (matches fc_latent.*)
+        self.fc_latent = nn.Linear(hidden_dim, latent_dim)
+
+        # DECODER (matches decoder_lstm.*)
+        self.decoder_lstm = nn.LSTM(
+            latent_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+
+        # Output projection (matches fc_output.*)
+        self.fc_output = nn.Linear(hidden_dim, input_dim)
+
+    def forward(self, x):
+        # x: (batch, seq_len, input_dim)
+        enc_out, (h_last, _) = self.encoder_lstm(x)  # h_last: (num_layers, B, H)
+        h_last = h_last[-1]                          # (B, H)
+        z = self.fc_latent(h_last)                   # (B, latent_dim)
+
+        seq_len = x.size(1)
+        # Repeat latent across time dimension
+        z_repeated = z.unsqueeze(1).repeat(1, seq_len, 1)  # (B, T, latent_dim)
+
+        dec_out, _ = self.decoder_lstm(z_repeated)         # (B, T, H)
+        recon = self.fc_output(dec_out)                    # (B, T, input_dim)
+        return recon
 
 # ---------------------------------------------
 # HF HELPERS
@@ -78,17 +99,19 @@ def load_joblib_from_hf(filename):
     path = hf_hub_download(
         repo_id=REPO_ID,
         filename=filename,
-        token=st.secrets["HF_TOKEN"]
+        token=st.secrets["HF_TOKEN"],
     )
     return joblib.load(path)
+
 
 def load_torch_from_hf(filename, map_location=None):
     path = hf_hub_download(
         repo_id=REPO_ID,
         filename=filename,
-        token=st.secrets["HF_TOKEN"]
+        token=st.secrets["HF_TOKEN"],
     )
     return torch.load(path, map_location=map_location)
+
 
 # -------- Load Joblib Files --------
 imputer = load_joblib_from_hf("secom_imputer.joblib")
@@ -124,27 +147,32 @@ def compute_tabular_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
     X_t = torch.from_numpy(X_scaled).float().to(device)
     with torch.no_grad():
         recon = model(X_t)
-        mse = torch.mean((X_t - recon)**2, dim=1)
+        mse = torch.mean((X_t - recon) ** 2, dim=1)
     return mse.cpu().numpy()
+
 
 def compute_tabular_ae_recon_and_error(model, X_scaled: np.ndarray):
     """Return reconstruction and per-sensor squared error."""
     X_t = torch.from_numpy(X_scaled).float().to(device)
     with torch.no_grad():
         recon = model(X_t)
-        err = (X_t - recon)**2
+        err = (X_t - recon) ** 2
     return recon.cpu().numpy(), err.cpu().numpy()
+
 
 def compute_lstm_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
     """Single LSTM AE score for the latest window."""
     if X_scaled.shape[0] < window_size:
         return np.array([0.0])
-    seq = X_scaled[-window_size:]
-    seq = torch.from_numpy(seq).float().unsqueeze(0).to(device)  # (1, window, input_dim)
+
+    # Take the last window_size samples as one sequence
+    seq = X_scaled[-window_size:]  # (T, F)
+    seq = torch.from_numpy(seq).float().unsqueeze(0).to(device)  # (1, T, F)
     with torch.no_grad():
         recon = model(seq)
-        mse = torch.mean((seq - recon)**2)
+        mse = torch.mean((seq - recon) ** 2)
     return np.array([float(mse)])
+
 
 def classify_health(iso_mean, ae_mean, lstm_mean):
     """Simple rule-based health classification."""
@@ -155,6 +183,7 @@ def classify_health(iso_mean, ae_mean, lstm_mean):
     else:
         return "🟢 NORMAL"
 
+
 def compute_sensor_feature_importance(pca_model, rf_model):
     """
     Approximate sensor-level importance:
@@ -162,11 +191,11 @@ def compute_sensor_feature_importance(pca_model, rf_model):
     - pca.components_ maps components → original sensors
     We combine them to get importance per sensor.
     """
-    pc_importance = rf_model.feature_importances_          # shape: (n_components,)
-    components = pca_model.components_                     # shape: (n_components, n_features)
-    # Weighted sum of absolute loadings
+    pc_importance = rf_model.feature_importances_          # (n_components,)
+    components = pca_model.components_                     # (n_components, n_features)
     sensor_importance = np.abs(components.T @ pc_importance)
     return sensor_importance  # (n_features,)
+
 
 # ---------------------------------------------
 # UI
@@ -177,7 +206,6 @@ st.caption("Smart Manufacturing AI — IsolationForest · Autoencoder · LSTM-AE
 uploaded_file = st.file_uploader("Upload a SECOM sensor CSV file", type=["csv"])
 
 if uploaded_file:
-
     # ----------------- LOAD & PREPROCESS -----------------
     df = pd.read_csv(uploaded_file, header=None)
     df.columns = [f"sensor_{i}" for i in range(df.shape[1])]
@@ -204,7 +232,7 @@ if uploaded_file:
     health = classify_health(iso_mean, ae_mean, lstm_mean)
 
     # Precompute AE per-sensor error for heatmap (used later)
-    _, ae_err_matrix = compute_tabular_ae_recon_and_error(ae, X_scaled)  # shape: (N, F)
+    _, ae_err_matrix = compute_tabular_ae_recon_and_error(ae, X_scaled)  # (N, F)
 
     # Sensor-level feature importance (RandomForest + PCA)
     sensor_importance = compute_sensor_feature_importance(pca_clf, clf)
@@ -231,7 +259,7 @@ if uploaded_file:
         col1.metric("IsolationForest Score", f"{iso_mean:.4f}")
         col2.metric("AE Reconstruction Error", f"{ae_mean:.4f}")
         col3.metric("LSTM AE Error", f"{lstm_mean:.4f}")
-        col4.metric("Fail Probability", f"{fail_mean*100:.2f}%")
+        col4.metric("Fail Probability", f"{fail_mean * 100:.2f}%")
 
         st.markdown("### ⚠️ Overall Machine State")
         st.markdown(f"## {health}")
@@ -262,7 +290,7 @@ if uploaded_file:
         max_samples = st.slider("Number of samples to show (rows)", 10, min(200, ae_err_matrix.shape[0]), 50)
         subset_err = ae_err_matrix[:max_samples, :]
         fig_hm, ax_hm = plt.subplots(figsize=(10, 4))
-        im = ax_hm.imshow(subset_err, aspect='auto', interpolation='nearest')
+        im = ax_hm.imshow(subset_err, aspect="auto", interpolation="nearest")
         ax_hm.set_xlabel("Sensor Index")
         ax_hm.set_ylabel("Sample Index")
         ax_hm.set_title("AE Per-Sensor Squared Error")
@@ -275,7 +303,7 @@ if uploaded_file:
 
         pc1 = X_pca[:, 0]
         fig3, ax3 = plt.subplots(figsize=(10, 4))
-        ax3.plot(pc1, marker='.', linestyle='-')
+        ax3.plot(pc1, marker=".", linestyle="-")
         ax3.set_xlabel("Sample Index")
         ax3.set_ylabel("PC1")
         ax3.set_title("PC1 Drift Over Time")
@@ -298,7 +326,7 @@ if uploaded_file:
             X_pca_2d[:, 1],
             c=pred_fail,
             cmap="coolwarm",
-            s=15
+            s=15,
         )
         plt.colorbar(sc, ax=ax4, label="Fail Probability")
         ax4.set_xlabel("PC1")
@@ -310,14 +338,14 @@ if uploaded_file:
         st.markdown("### 🌐 PCA 3D Scatter (colored by AE Error)")
         X_pca_3d = X_pca[:, :3]
         fig_3d = plt.figure(figsize=(8, 6))
-        ax_3d = fig_3d.add_subplot(111, projection='3d')
+        ax_3d = fig_3d.add_subplot(111, projection="3d")
         sc3 = ax_3d.scatter(
             X_pca_3d[:, 0],
             X_pca_3d[:, 1],
             X_pca_3d[:, 2],
             c=ae_score,
             cmap="inferno",
-            s=20
+            s=20,
         )
         fig_3d.colorbar(sc3, ax=ax_3d, shrink=0.6, label="AE Error")
         ax_3d.set_xlabel("PC1")
@@ -333,11 +361,11 @@ if uploaded_file:
 
         fig_inter, ax_inter = plt.subplots(figsize=(7, 6))
         sc_int = ax_inter.scatter(
-            X_pca[:, pc_x-1],
-            X_pca[:, pc_y-1],
+            X_pca[:, pc_x - 1],
+            X_pca[:, pc_y - 1],
             c=pred_fail,
             cmap="coolwarm",
-            s=15
+            s=15,
         )
         ax_inter.set_xlabel(f"PC{pc_x}")
         ax_inter.set_ylabel(f"PC{pc_y}")
@@ -347,7 +375,7 @@ if uploaded_file:
         # 4) PCA drift trajectory
         st.markdown("### 📉 PCA Drift Trajectory (PC1 vs PC2)")
         fig_traj, ax_traj = plt.subplots(figsize=(7, 6))
-        ax_traj.plot(X_pca_2d[:, 0], X_pca_2d[:, 1], '-o', markersize=3)
+        ax_traj.plot(X_pca_2d[:, 0], X_pca_2d[:, 1], "-o", markersize=3)
         ax_traj.set_xlabel("PC1")
         ax_traj.set_ylabel("PC2")
         ax_traj.set_title("PCA Drift Path Over Time")
@@ -361,7 +389,7 @@ if uploaded_file:
             X_pca_2d[:, 1],
             c=ae_score,
             cmap="inferno",
-            s=20
+            s=20,
         )
         plt.colorbar(sc_heat, ax=ax_heat, label="AE Error")
         ax_heat.set_xlabel("PC1")
@@ -384,10 +412,10 @@ if uploaded_file:
         lcl = mean_val - 3 * std_val
 
         fig_sens, ax_sens = plt.subplots(figsize=(12, 4))
-        ax_sens.plot(series, marker='.', linestyle='-', label=selected_sensor)
-        ax_sens.axhline(mean_val, color='green', linestyle='--', label="Mean")
-        ax_sens.axhline(ucl, color='red', linestyle='--', label="UCL (Mean + 3σ)")
-        ax_sens.axhline(lcl, color='red', linestyle='--', label="LCL (Mean - 3σ)")
+        ax_sens.plot(series, marker=".", linestyle="-", label=selected_sensor)
+        ax_sens.axhline(mean_val, color="green", linestyle="--", label="Mean")
+        ax_sens.axhline(ucl, color="red", linestyle="--", label="UCL (Mean + 3σ)")
+        ax_sens.axhline(lcl, color="red", linestyle="--", label="LCL (Mean - 3σ)")
         ax_sens.set_title(f"{selected_sensor} — SPC Chart")
         ax_sens.set_xlabel("Sample Index")
         ax_sens.set_ylabel("Sensor Value")
@@ -405,11 +433,12 @@ if uploaded_file:
     with tab6:
         st.subheader("⭐ Feature Importance (Sensor-Level Approximation)")
 
-        # Build DataFrame of importance
-        imp_df = pd.DataFrame({
-            "sensor": [f"sensor_{i}" for i in range(sensor_importance.shape[0])],
-            "importance": sensor_importance
-        }).sort_values("importance", ascending=False)
+        imp_df = pd.DataFrame(
+            {
+                "sensor": [f"sensor_{i}" for i in range(sensor_importance.shape[0])],
+                "importance": sensor_importance,
+            }
+        ).sort_values("importance", ascending=False)
 
         top_n = st.slider("Show top N sensors", 5, 50, 15)
         top_imp = imp_df.head(top_n)
