@@ -29,15 +29,23 @@ device = "cpu"
 class TabularAE(nn.Module):
     def __init__(self, input_dim, latent_dim=32):
         super().__init__()
+
+        # Encoder — EXACT MATCH from checkpoint
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 256),  # 590 → 256
             nn.ReLU(),
-            nn.Linear(128, latent_dim)
+            nn.Linear(256, 128),        # 256 → 128
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)  # 128 → 32
         )
+
+        # Decoder — EXACT MATCH from checkpoint
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),
+            nn.Linear(latent_dim, 128),  # 32 → 128
             nn.ReLU(),
-            nn.Linear(128, input_dim)
+            nn.Linear(128, 256),         # 128 → 256
+            nn.ReLU(),
+            nn.Linear(256, input_dim)    # 256 → 590
         )
 
     def forward(self, x):
