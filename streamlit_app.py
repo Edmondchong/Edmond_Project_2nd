@@ -15,57 +15,67 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # ---------------------------------------------
-# LOAD MODELS & ARTIFACTS (from private HuggingFace repo)
+# HF + DEVICE
 # ---------------------------------------------
 from huggingface_hub import hf_hub_download
 
-REPO_ID = "EdmondChong/SensorDrift"   
-
+REPO_ID = "EdmondChong/SensorDrift"
 device = "cpu"
 
-# ---------- MODEL DEFINITIONS ----------
+# ---------------------------------------------
+# MODEL DEFINITIONS
+# ---------------------------------------------
 class TabularAE(nn.Module):
     def __init__(self, input_dim, latent_dim=32):
         super().__init__()
 
-        # Encoder — EXACT MATCH from checkpoint
+        # Encoder — shapes inferred from checkpoint error
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256),  # 590 → 256
+            nn.Linear(input_dim, 256),  # 590 -> 256
             nn.ReLU(),
-            nn.Linear(256, 128),        # 256 → 128
+            nn.Linear(256, 128),        # 256 -> 128
             nn.ReLU(),
-            nn.Linear(128, latent_dim)  # 128 → 32
+            nn.Linear(128, latent_dim)  # 128 -> 32
         )
 
-        # Decoder — EXACT MATCH from checkpoint
+        # Decoder — shapes inferred from checkpoint error
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),  # 32 → 128
+            nn.Linear(latent_dim, 128),  # 32 -> 128
             nn.ReLU(),
-            nn.Linear(128, 256),         # 128 → 256
+            nn.Linear(128, 256),         # 128 -> 256
             nn.ReLU(),
-            nn.Linear(256, input_dim)    # 256 → 590
+            nn.Linear(256, input_dim)    # 256 -> 590
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = self.encoder(x)
         out = self.decoder(z)
         return out
 
 
 class LSTM_AE(nn.Module):
+    """
+    This should match the architecture you used during training.
+    If your original LSTM AE was different (e.g. hidden_dim=128, num_layers=2),
+    adjust here accordingly.
+    """
     def __init__(self, input_dim, hidden_dim=64):
         super().__init__()
         self.encoder = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.decoder = nn.LSTM(hidden_dim, input_dim, batch_first=True)
 
-    def forward(self, x):
-        _, (h, _) = self.encoder(x)
-        h = h.repeat(x.size(1), 1, 1).transpose(0,1)
-        out, _ = self.decoder(h)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch, seq_len, input_dim)
+        _, (h, _) = self.encoder(x)  # h: (1, batch, hidden_dim)
+        # repeat hidden state across time dimension
+        h_rep = h.repeat(x.size(1), 1, 1).transpose(0, 1)  # (batch, seq_len, hidden_dim)
+        out, _ = self.decoder(h_rep)  # (batch, seq_len, input_dim)
         return out
 
+# ---------------------------------------------
+# HF HELPERS
+# ---------------------------------------------
 def load_joblib_from_hf(filename):
     path = hf_hub_download(
         repo_id=REPO_ID,
@@ -82,8 +92,6 @@ def load_torch_from_hf(filename, map_location=None):
     )
     return torch.load(path, map_location=map_location)
 
-
-
 # -------- Load Joblib Files --------
 imputer = load_joblib_from_hf("secom_imputer.joblib")
 scaler = load_joblib_from_hf("secom_scaler.joblib")
@@ -98,11 +106,9 @@ input_dim = ae_meta["input_dim"]
 lstm_meta = load_joblib_from_hf("secom_lstm_meta.joblib")
 window_size = lstm_meta["window_size"]
 
-
 # -------- Load PyTorch Models --------
 ae_state = load_torch_from_hf("secom_ae_best.pth", map_location=device)
 lstm_state = load_torch_from_hf("secom_lstm_ae.pth", map_location=device)
-
 
 ae = TabularAE(input_dim=input_dim).to(device)
 ae.load_state_dict(ae_state)
@@ -111,7 +117,6 @@ ae.eval()
 lstm_ae = LSTM_AE(input_dim=input_dim).to(device)
 lstm_ae.load_state_dict(lstm_state)
 lstm_ae.eval()
-
 
 # ---------------------------------------------
 # UTILITY FUNCTIONS
@@ -137,7 +142,7 @@ def compute_lstm_ae_score(model, X_scaled: np.ndarray) -> np.ndarray:
     if X_scaled.shape[0] < window_size:
         return np.array([0.0])
     seq = X_scaled[-window_size:]
-    seq = torch.from_numpy(seq).float().unsqueeze(0).to(device)
+    seq = torch.from_numpy(seq).float().unsqueeze(0).to(device)  # (1, window, input_dim)
     with torch.no_grad():
         recon = model(seq)
         mse = torch.mean((seq - recon)**2)
