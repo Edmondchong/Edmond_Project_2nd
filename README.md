@@ -69,16 +69,27 @@ Sensor-importance rankings via PCA → RF mapping
 ⚙️ Tech Stack
 
 Python
+
 NumPy / Pandas / scikit-learn
+
 PyTorch
+
 Autoencoder (Tabular)
+
 LSTM-AE
+
 PCA
+
 SPC (3-sigma UCL/LCL)
+
 Streamlit
+
 Docker
+
 AWS EC2
+
 HuggingFace Hub (Private Artifacts)
+
 CI/CD (GitHub Actions)
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
