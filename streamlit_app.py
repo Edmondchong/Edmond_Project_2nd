@@ -24,43 +24,29 @@ REPO_ID = "EdmondChong/SensorDrift"
 device = "cpu"
 
 class LSTM_AE(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64):
+    def __init__(self, input_dim, hidden_dim=128, latent_dim=64, num_layers=1):
         super().__init__()
 
-        # encoder LSTM (matches "encoder_lstm.*")
+        # ENCODER
         self.encoder_lstm = nn.LSTM(
-            input_dim, hidden_dim, batch_first=True
+            input_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True
         )
 
-        # latent FC layer (matches "fc_latent.*")
-        self.fc_latent = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_latent = nn.Linear(hidden_dim, latent_dim)
 
-        # decoder LSTM (matches "decoder_lstm.*")
+        # DECODER
         self.decoder_lstm = nn.LSTM(
-            hidden_dim, hidden_dim, batch_first=True
+            latent_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True
         )
 
-        # output projection (matches "fc_output.*")
         self.fc_output = nn.Linear(hidden_dim, input_dim)
 
-    def forward(self, x):
-        # x = (batch, seq_len, input_dim)
-
-        # ---- Encoder ----
-        enc_out, (h, c) = self.encoder_lstm(x)    # h: (1, batch, hidden_dim)
-        latent = self.fc_latent(h[-1])            # (batch, hidden_dim)
-
-        # ---- Repeat latent across time ----
-        seq_len = x.size(1)
-        latent_seq = latent.unsqueeze(1).repeat(1, seq_len, 1)
-
-        # ---- Decoder ----
-        dec_out, _ = self.decoder_lstm(latent_seq)
-
-        # ---- Output projection ----
-        out = self.fc_output(dec_out)  # (batch, seq_len, input_dim)
-
-        return out
 
 class TabularAE(nn.Module):
     def __init__(self, input_dim):
