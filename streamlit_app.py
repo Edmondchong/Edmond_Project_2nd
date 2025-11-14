@@ -23,55 +23,45 @@ from huggingface_hub import hf_hub_download
 REPO_ID = "EdmondChong/SensorDrift"
 device = "cpu"
 
-# ---------------------------------------------
-# MODEL DEFINITIONS
-# ---------------------------------------------
-class TabularAE(nn.Module):
-    def __init__(self, input_dim, latent_dim=32):
-        super().__init__()
-
-        # Encoder — shapes inferred from checkpoint error
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256),  # 590 -> 256
-            nn.ReLU(),
-            nn.Linear(256, 128),        # 256 -> 128
-            nn.ReLU(),
-            nn.Linear(128, latent_dim)  # 128 -> 32
-        )
-
-        # Decoder — shapes inferred from checkpoint error
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),  # 32 -> 128
-            nn.ReLU(),
-            nn.Linear(128, 256),         # 128 -> 256
-            nn.ReLU(),
-            nn.Linear(256, input_dim)    # 256 -> 590
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z = self.encoder(x)
-        out = self.decoder(z)
-        return out
-
-
 class LSTM_AE(nn.Module):
-    """
-    This should match the architecture you used during training.
-    If your original LSTM AE was different (e.g. hidden_dim=128, num_layers=2),
-    adjust here accordingly.
-    """
     def __init__(self, input_dim, hidden_dim=64):
         super().__init__()
-        self.encoder = nn.LSTM(input_dim, hidden_dim, batch_first=True)
-        self.decoder = nn.LSTM(hidden_dim, input_dim, batch_first=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (batch, seq_len, input_dim)
-        _, (h, _) = self.encoder(x)  # h: (1, batch, hidden_dim)
-        # repeat hidden state across time dimension
-        h_rep = h.repeat(x.size(1), 1, 1).transpose(0, 1)  # (batch, seq_len, hidden_dim)
-        out, _ = self.decoder(h_rep)  # (batch, seq_len, input_dim)
+        # encoder LSTM (matches "encoder_lstm.*")
+        self.encoder_lstm = nn.LSTM(
+            input_dim, hidden_dim, batch_first=True
+        )
+
+        # latent FC layer (matches "fc_latent.*")
+        self.fc_latent = nn.Linear(hidden_dim, hidden_dim)
+
+        # decoder LSTM (matches "decoder_lstm.*")
+        self.decoder_lstm = nn.LSTM(
+            hidden_dim, hidden_dim, batch_first=True
+        )
+
+        # output projection (matches "fc_output.*")
+        self.fc_output = nn.Linear(hidden_dim, input_dim)
+
+    def forward(self, x):
+        # x = (batch, seq_len, input_dim)
+
+        # ---- Encoder ----
+        enc_out, (h, c) = self.encoder_lstm(x)    # h: (1, batch, hidden_dim)
+        latent = self.fc_latent(h[-1])            # (batch, hidden_dim)
+
+        # ---- Repeat latent across time ----
+        seq_len = x.size(1)
+        latent_seq = latent.unsqueeze(1).repeat(1, seq_len, 1)
+
+        # ---- Decoder ----
+        dec_out, _ = self.decoder_lstm(latent_seq)
+
+        # ---- Output projection ----
+        out = self.fc_output(dec_out)  # (batch, seq_len, input_dim)
+
         return out
+
 
 # ---------------------------------------------
 # HF HELPERS
