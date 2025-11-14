@@ -25,6 +25,39 @@ REPO_ID = "EdmondChong/SensorDrift"
 
 device = "cpu"
 
+# ---------- MODEL DEFINITIONS ----------
+class TabularAE(nn.Module):
+    def __init__(self, input_dim, latent_dim=32):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, input_dim)
+        )
+
+    def forward(self, x):
+        z = self.encoder(x)
+        out = self.decoder(z)
+        return out
+
+
+class LSTM_AE(nn.Module):
+    def __init__(self, input_dim, hidden_dim=64):
+        super().__init__()
+        self.encoder = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.decoder = nn.LSTM(hidden_dim, input_dim, batch_first=True)
+
+    def forward(self, x):
+        _, (h, _) = self.encoder(x)
+        h = h.repeat(x.size(1), 1, 1).transpose(0,1)
+        out, _ = self.decoder(h)
+        return out
+
 def load_joblib_from_hf(filename):
     path = hf_hub_download(
         repo_id=REPO_ID,
